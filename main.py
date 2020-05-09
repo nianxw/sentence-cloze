@@ -178,10 +178,10 @@ def main():
     # Prepare model
     bert_config = BertConfig.from_json_file(args.bert_config_file)
     tokenizer = BertTokenizer(vocab_file=args.vocab_file, do_lower_case=args.do_lower_case)
-    model =BertForMultiChoice(bert_config)
+    model = BertForMultiChoice(bert_config)
     if args.init_checkpoint is not None:
         logger.info('load bert weight')
-        state_dict=torch.load(args.init_checkpoint, map_location='cpu')
+        state_dict = torch.load(args.init_checkpoint, map_location='cpu')
         missing_keys = []
         unexpected_keys = []
         error_msgs = []
@@ -287,11 +287,15 @@ def main():
         all_segment_ids = torch.tensor([f.segment_ids for f in train_features], dtype=torch.long)
         all_choice_positions = torch.tensor([f.choice_positions for f in  train_features],dtype=torch.long)
         all_answer_positions = torch.tensor([f.answer_positions for f in  train_features],dtype=torch.long)
+        all_choice_positions_mask = torch.tensor([f.choice_positions_mask for f in  train_features],dtype=torch.long)
+        all_answer_positions_mask = torch.tensor([f.answer_positions_mask for f in  train_features],dtype=torch.long)
         all_choice_labels = torch.tensor([f.choice_labels for f in train_features], dtype=torch.long)
-        all_choice_labels_mask = torch.tensor([f.all_choice_labels_mask for f in train_features], dtype=torch.long)
-        train_data = TensorDataset(all_input_ids, all_input_mask, 
-                                   all_segment_ids,all_choice_positions,
-                                   all_answer_positions, all_choice_labels, all_choice_labels_mask)
+        all_choice_labels_for_consine = torch.tensor([f.choice_labels_for_consine for f in train_features], dtype=torch.long)
+
+        train_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids,
+                                   all_choice_positions,all_answer_positions, 
+                                   all_choice_positions_mask, all_answer_positions_mask,
+                                   all_choice_labels, all_choice_labels_for_consine)
         if args.local_rank == -1:
             train_sampler = RandomSampler(train_data)
         else:
@@ -301,15 +305,18 @@ def main():
         model.train()
         for _ in trange(int(args.num_train_epochs), desc="Epoch"):
             model.zero_grad()
-            epoch_itorator=tqdm(train_dataloader,disable=None)
+            epoch_itorator = tqdm(train_dataloader, disable=None)
             for step, batch in enumerate(epoch_itorator):
                 if n_gpu == 1:
-                    batch = tuple(t.to(device) for t in batch) # multi-gpu does scattering it-self
-                input_ids, input_mask, segment_ids, all_choice_positions, all_answer_positions, all_choice_labels = batch
-                loss1, loss2 = model(input_ids, segment_ids, input_mask, all_choice_positions, all_answer_positions, all_choice_labels, all_choice_labels_mask, limit_loss=True)
+                    batch = tuple(t.to(device) for t in batch)  # multi-gpu does scattering it-self
+                input_ids, input_mask, segment_ids, choice_positions, answer_positions, choice_positions_mask,  answer_positions_mask, choice_labels, choice_labels_for_consine = batch
+                loss1, loss2 = model(input_ids, input_mask, segment_ids,
+                                     choice_positions, answer_positions, 
+                                     choice_positions_mask, answer_positions_mask, 
+                                     choice_labels, choice_labels_for_consine, limit_loss=True)
                 loss = loss1 + loss2
                 if n_gpu > 1:
-                    loss = loss.mean() # mean() to average on multi-gpu.
+                    loss = loss.mean()  # mean() to average on multi-gpu.
                 if args.gradient_accumulation_steps > 1:
                     loss = loss / args.gradient_accumulation_steps
                 if args.fp16:
@@ -326,7 +333,7 @@ def main():
                     global_step += 1
 
                 if (step+1) % 50 == 0:
-                    logger.info("step: {} #### loss1: {}  loss2: {}".format(step,loss1.cpu().item(), loss2.cpu().item()))
+                    logger.info("step: {} #### loss1: {}  loss2: {}".format(step, loss1.cpu().item(), loss2.cpu().item()))
 
     # Save a trained model
     output_model_file = os.path.join(args.output_dir, "pytorch_model.bin")
@@ -337,7 +344,7 @@ def main():
 
     # Load a trained model that you have fine-tuned
     model_state_dict = torch.load(output_model_file)
-    model =BertForMultiChoice(bert_config)
+    model = BertForMultiChoice(bert_config)
     model.load_state_dict(model_state_dict)
     model.to(device)
     if n_gpu > 1:
@@ -364,11 +371,15 @@ def main():
         all_segment_ids = torch.tensor([f.segment_ids for f in eval_features], dtype=torch.long)
         all_choice_positions = torch.tensor([f.choice_positions for f in  eval_features],dtype=torch.long)
         all_answer_positions = torch.tensor([f.answer_positions for f in  eval_features],dtype=torch.long)
+        all_choice_positions_mask = torch.tensor([f.choice_positions_mask for f in  eval_features],dtype=torch.long)
+        all_answer_positions_mask = torch.tensor([f.answer_positions_mask for f in  eval_features],dtype=torch.long)
+
         all_example_index = torch.arange(all_input_ids.size(0), dtype=torch.long)
 
         eval_data = TensorDataset(all_input_ids, all_input_mask, 
                                   all_segment_ids,all_choice_positions,
-                                  all_answer_positions, all_example_index)
+                                  all_answer_positions, all_choice_positions_mask,
+                                  all_answer_positions_mask, all_example_index)
         eval_sampler = SequentialSampler(eval_data)
         eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.predict_batch_size)
         
@@ -377,7 +388,7 @@ def main():
         all_results = []
         logger.info("Start evaluating")
 
-        for input_ids, input_mask, segment_ids, choice_positions, answer_positions, example_indices in tqdm(eval_dataloader, desc="Evaluating",disable=None):
+        for input_ids, input_mask, segment_ids, choice_positions, answer_positions, choice_positions_mask, answer_positions_mask, example_indices in tqdm(eval_dataloader, desc="Evaluating",disable=None):
             if len(all_results) % 1000 == 0:
                 logger.info("Processing example: %d" % (len(all_results)))
             input_ids = input_ids.to(device)
@@ -385,8 +396,10 @@ def main():
             segment_ids = segment_ids.to(device)
             choice_positions = choice_positions.to(device)
             answer_positions = answer_positions.to(device)
+            choice_positions_mask = choice_positions_mask.to(device)
+            answer_positions_mask = answer_positions_mask.to(device)
             with torch.no_grad():
-                batch_logits = model(input_ids, input_mask, segment_ids, choice_positions, answer_positions)  # [24, n]
+                batch_logits = model(input_ids, input_mask, segment_ids, choice_positions, answer_positions, choice_positions_mask, answer_positions_mask)  # [24, n]
             for i, example_index in enumerate(example_indices):
                 logits = batch_logits[i].detach().cpu().tolist()
                 eval_feature = eval_features[example_index.item()]
@@ -394,13 +407,10 @@ def main():
                 all_results.append(RawResult(unique_id=unique_id,
                                              logits=logits))
         output_prediction_file = os.path.join(args.output_dir, "predictions.json")
-        output_nbest_file = os.path.join(args.output_dir, "nbest_predictions.json")
         
         
         write_predictions(eval_examples, eval_features, all_results,
-                          args.n_best_size, args.max_answer_length,
-                          args.do_lower_case, output_prediction_file,
-                          output_nbest_file, args.verbose_logging)
+                          args.max_answer_length, output_prediction_file, args.verbose_logging)
 
 
 if __name__ == "__main__":

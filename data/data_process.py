@@ -185,7 +185,6 @@ class InputFeatures(object):
         self.choice_positions_mask = choice_positions_mask
         self.answer_positions_mask = answer_positions_mask
         self.choice_labels = choice_labels
-        self.choice_labels_mask = choice_positions_mask
         self.choice_labels_for_consine = choice_labels_for_consine
 
 
@@ -197,6 +196,7 @@ def convert_examples_to_features(examples, tokenizer, max_choice_nums=20,
     for example in tqdm(examples):
         unique_id = example.unique_id
         example_index = example.example_index
+        doc_answers_text = example.sub_answer_texts
         doc_span_index = example.qas_id
         doc_tokens = example.sub_doc_texts  # 文本
         doc_choice_texts = [tokenizer.tokenize(_) for _ in example.choices]  # 候选答案
@@ -290,6 +290,7 @@ def convert_examples_to_features(examples, tokenizer, max_choice_nums=20,
             unique_id=unique_id,
             example_index=example_index,
             doc_span_index=doc_span_index,
+            doc_answers_text=doc_answers_text,
             tokens=tokens,
             input_ids=input_ids,
             input_mask=input_mask,
