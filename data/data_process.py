@@ -28,7 +28,7 @@ class SenExample(object):
                  sub_doc_texts,
                  sub_answer_texts,
                  choice_labels=None,
-                 choice_labels_mask=None):
+                 choice_labels_for_consine=None):
         self.qas_id = qas_id
         self.example_index = example_index
         self.unique_id = unique_id
@@ -36,7 +36,7 @@ class SenExample(object):
         self.sub_doc_texts = sub_doc_texts
         self.sub_answer_texts = sub_answer_texts
         self.choice_labels = choice_labels
-        self.choice_labels_mask = choice_labels_mask
+        self.choice_labels_for_consine = choice_labels_for_consine
 
     def __str__(self):
         return self.__repr__()
@@ -129,16 +129,16 @@ def read_examples(input_data, doc_stride=64, max_seq_length=512, is_training=Tru
                 if "[unused" in item:
                     sub_answers.append(item)
             choice_labels = []
-            choice_labels_mask = []
+            choice_labels_for_consine = []
             if is_training:
                 for i in range(len(choices)):
                     a = choice_to_answer[i]
                     if a in sub_answers:
                         choice_labels.append(sub_answers.index(a)+1)
-                        choice_labels_mask.append(1)
+                        choice_labels_for_consine.append(0)
                     else:
                         choice_labels.append(0)
-                        choice_labels_mask.append(0)
+                        choice_labels_for_consine.append(1)
             example = SenExample(
                 qas_id=str(context_index)+"###"+str(start_index)+"#"+str(end_index),
                 example_index=example_index,
@@ -147,7 +147,7 @@ def read_examples(input_data, doc_stride=64, max_seq_length=512, is_training=Tru
                 sub_doc_texts=sub_doc_texts,
                 sub_answer_texts=sub_answers,
                 choice_labels=choice_labels,
-                choice_labels_mask=choice_labels_mask
+                choice_labels_for_consine=choice_labels_for_consine
             )
             examples.append(example)
             unique_id += 1
@@ -169,8 +169,10 @@ class InputFeatures(object):
                  segment_ids,
                  choice_positions,
                  answer_positions,
+                 choice_positions_mask,
+                 answer_positions_mask,
                  choice_labels=None,
-                 choice_labels_mask=None):
+                 choice_labels_for_consine=None):
         self.unique_id = unique_id
         self.example_index = example_index
         self.doc_span_index = doc_span_index
@@ -180,7 +182,11 @@ class InputFeatures(object):
         self.segment_ids = segment_ids
         self.choice_positions = choice_positions
         self.answer_positions = answer_positions
+        self.choice_positions_mask = choice_positions_mask
+        self.answer_positions_mask = answer_positions_mask
         self.choice_labels = choice_labels
+        self.choice_labels_mask = choice_positions_mask
+        self.choice_labels_for_consine = choice_labels_for_consine
 
 
 def convert_examples_to_features(examples, tokenizer, max_choice_nums=20, 
@@ -195,7 +201,7 @@ def convert_examples_to_features(examples, tokenizer, max_choice_nums=20,
         doc_tokens = example.sub_doc_texts  # 文本
         doc_choice_texts = [tokenizer.tokenize(_) for _ in example.choices]  # 候选答案
         doc_choice_labels = example.choice_labels
-        doc_choice_labels_mask = example.choice_labels_mask
+        doc_choice_labels_for_consine = example.choice_labels_for_consine
 
         tokens = []  # 输入序列
         choice_positions = []  # choice的在input中对应的起始和终止位置
@@ -240,6 +246,8 @@ def convert_examples_to_features(examples, tokenizer, max_choice_nums=20,
         choice_positions_mask = [1] * len(choice_positions)
         while len(choice_positions) < max_choice_nums:
             choice_positions.append(0)
+            doc_choice_labels.append(0)
+            doc_choice_labels_for_consine.append(0)
             choice_positions_mask.append(0)
 
         answer_positions_mask = [1] * len(answer_positions)
@@ -251,25 +259,32 @@ def convert_examples_to_features(examples, tokenizer, max_choice_nums=20,
         assert len(choice_positions_mask) == max_choice_nums
         assert len(answer_positions) == max_answer_nums
         assert len(answer_positions_mask) == max_answer_nums
-        
-        if is_training:
+        assert len(doc_choice_labels) == max_answer_nums
+        assert len(doc_choice_labels_for_consine) == max_answer_nums
 
 
-        if example_index < 5:
+
+        if example_index < 3:
             logger.info("*** Example ***")
             logger.info("unique_id: %s" % (unique_id))
             logger.info("example_index: %s" % (example_index))
             logger.info("doc_span_index: %s" % (doc_span_index))
             logger.info("tokens: %s" % " ".join(tokens))
             logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
-            logger.info("choice_positions: %s" % " ".join([str(x) for x in choice_positions]))
-            logger.info("answer_positions: %s" % " ".join([str(x) for x in answer_positions]))
             logger.info(
                 "input_mask: %s" % " ".join([str(x) for x in input_mask]))
             logger.info(
                 "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
+            logger.info("choice_positions: %s" % " ".join([str(x) for x in choice_positions]))
+            logger.info("answer_positions: %s" % " ".join([str(x) for x in answer_positions]))
+            logger.info(
+                "choice_positions_mask: %s" % " ".join([str(x) for x in choice_positions_mask]))
+            logger.info(
+                "choice_positions_mask: %s" % " ".join([str(x) for x in answer_positions_mask]))
+
             if is_training:
                 logger.info("choice_labels: %s" % " ".join([str(x) for x in doc_choice_labels]))
+                logger.info("choice_labels: %s" % " ".join([str(x) for x in doc_choice_labels_for_consine]))
 
         features.append(InputFeatures(
             unique_id=unique_id,
@@ -281,8 +296,10 @@ def convert_examples_to_features(examples, tokenizer, max_choice_nums=20,
             segment_ids=segment_ids,
             choice_positions=choice_positions,
             answer_positions=answer_positions,
+            answer_positions_mask=answer_positions_mask,
+            choice_positions_mask=choice_positions_mask,
             choice_labels=doc_choice_labels,
-            choice_labels_mask=doc_choice_labels_mask
+            choice_labels_for_consine=doc_choice_labels_for_consine
         )) 
 
 

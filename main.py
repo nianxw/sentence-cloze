@@ -48,58 +48,67 @@ class BertForMultiChoice(PreTrainedBertModel):
 
     def forward(self,
                 input_ids,
-                token_type_ids=None,
-                attention_mask=None,
-                choice_positions=None,  # (batch_size, choice_nums) [[1,2,5,7,8...], ...]
-                answer_poisitions=None,  # (batch_size, answer_nums)
-                labels=None,
-                labels_mask=None,
+                input_mask,
+                segment_ids,
+                choice_positions,
+                answer_positions, 
+                choice_positions_mask,  # b, m
+                answer_positions_mask,
+                choice_labels=None,
+                choice_labels_for_consine=None,
                 limit_loss=False):
-        sequence_output, _ = self.bert(input_ids, token_type_ids, attention_mask, output_all_encoded_layers=False)
+        sequence_output, _ = self.bert(input_ids, segment_ids, input_mask, output_all_encoded_layers=False)
 
         # get choice representation
         choice_rep = self.gather_info(sequence_output, choice_positions)
-        choice_rep = choice_rep.split(2, 1)
-        choice_rep = list(map(lambda x: x.view(x.size()[0], -1), choice_rep))
-        choice_rep = torch.stack(choice_rep, 1)
         choice_rep_w1 = self.W1(choice_rep)   # [batch_size, m, hidden_size]  m为候选答案数目
 
         # get answer representation
-        answer_rep = self.gather_info(sequence_output, answer_poisitions)
+        answer_rep = self.gather_info(sequence_output, answer_positions)
         answer_rep_w2 = self.W2(answer_rep)   # [batch_size, n, hidden_size]  n为blank数目
 
-        attention_matrix = torch.bmm(choice_rep_w1, answer_rep_w2.permute(0, 2, 1))
-        logits = F.softmax(attention_matrix, -1)
+        attention_matrix = torch.bmm(choice_rep_w1, answer_rep_w2.permute(0, 2, 1))  # [batch_size, m, n]
+        attention_matrix_mask = torch.bmm(choice_positions_mask.unsqueeze(-1), answer_positions_mask.unsqueeze(1))  # [batch_size, m, n]
+        attention_matrix_mask = attention_matrix_mask.to(dtype=next(self.parameters()).dtype)
 
-        if labels is not None:
+        attention_matrix_logits = attention_matrix + (1-attention_matrix_mask) * -10000.0
+
+        probs = F.softmax(attention_matrix_logits, -1)
+
+        if choice_labels is not None:
             # get loss
             # loss1
-            logits_flat = torch.log(logits.view(-1, logits.size()[-1]))
-            labels = labels.view(-1)
-            loss_fct = NLLLoss()
-            loss1 = loss_fct(logits_flat, labels)
-            total_loss = loss1
-            
+            logits_flat = torch.log(probs.view(-1, probs.size()[-1]))
+            labels = choice_labels.view(-1)
+            labels_mask = choice_positions_mask.view(-1)
+
+            one_hot_label = F.one_hot(labels, num_class=logits_flat.size()[-1])
+            per_choice_loss = - torch.sum(logits_flat * one_hot_label, dim=-1)
+            numerator = torch.sum(labels_mask * per_choice_loss)
+            denominator = torch.sum(labels_mask) + 1e-5
+            loss1 = numerator / denominator
+            loss2 = None
             # loss2
             if limit_loss:
-                logits_normal = F.normalize(logits, p=2, dim=-1)
+                logits_normal = F.normalize(probs, p=2, dim=-1)
                 choice_att_matrix = torch.bmm(logits_normal, logits_normal.permute(0, 2, 1))   # [batch_size, m, m]
-                # choice_att_matrix = torch.triu(choice_att_matrix, 1).view(choice_att_matrix.size()[0], -1)
-                choice_att_matrix = torch.triu(choice_att_matrix, 1)
+                choice_att_matrix_mask = torch.bmm(choice_positions_mask.unsqueeze(-1), choice_positions_mask.unsqueeze(1))  # [batch_size, m, m]
+
+                choice_att_triu_matrix = torch.triu(choice_att_matrix * choice_att_matrix_mask, 1)
+
 
                 # 获取两个子loss
-                labels_mask_1 = labels_mask.permute(0, 2, 1)
-                cos_distance_1 = choice_att_matrix.mul(labels_mask_1).view(choice_att_matrix.size()[0], -1)
+                cosine_mask_for_negtive = torch.bmm(choice_labels_for_consine.unsqueeze(-1), choice_labels_for_consine.unsqueeze(1)) 
+                cosine_mask_for_positive = 1 - cosine_mask_for_negtive
 
-                labels_mask_2 = 1 - (labels_mask_1 + labels_mask)
-                cos_distance_2 = 1 - choice_att_matrix.mul(labels_mask_2).view(choice_att_matrix.size()[0], -1)
+                cos_distance_1 = torch.sum((choice_att_triu_matrix * cosine_mask_for_positive).view(choice_att_triu_matrix.size(0), -1), dim=-1)
+                cos_distance_2 = torch.sum((choice_att_triu_matrix * cosine_mask_for_negtive).view(choice_att_triu_matrix.size(0), -1), dim=-1)
 
-                cos_distance = torch.sum(cos_distance_1, dim=-1).squeeze() + torch.sum(cos_distance_2, dim=-1).squeeze()
+                cos_distance = cos_distance_1 + cos_distance_2
                 loss2 = cos_distance.mean()
-                total_loss += loss2
             return loss1, loss2
         else:
-            return logits
+            return probs
 
 def warmup_linear(x, warmup=0.002):
     if x < warmup:
