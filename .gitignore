@@ -1,2 +1,3 @@
-#.pyc
-#.gitigonre
+*.pyc
+*.gitigonre
+*__pycache__

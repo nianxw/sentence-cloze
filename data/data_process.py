@@ -6,7 +6,7 @@ import logging
 from tqdm import tqdm
 from pytorch_pretrained_bert.tokenization import whitespace_tokenize, BasicTokenizer, BertTokenizer
 
-logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
+logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
                     datefmt='%m/%d/%Y %H:%M:%S',
                     level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -55,21 +55,21 @@ class SenExample(object):
 
 def read_examples(input_data, doc_stride=64, max_seq_length=512, is_training=True):
     replace_list=[
-       ['[BLANK1]','[unused1]'],
-       ['[BLANK2]','[unused2]'],
-       ['[BLANK3]','[unused3]'],
-       ['[BLANK4]','[unused4]'],
-       ['[BLANK5]','[unused5]'],
-       ['[BLANK6]','[unused6]'],
-       ['[BLANK7]','[unused7]'],
-       ['[BLANK8]','[unused8]'],
-       ['[BLANK9]','[unused9]'],
-       ['[BLANK10]','[unused10]'],
-       ['[BLANK11]','[unused11]'],
-       ['[BLANK12]','[unused12]'],
-       ['[BLANK13]','[unused13]'],
-       ['[BLANK14]','[unused14]'],
-       ['[BLANK15]','[unused15]'],
+       ['[BLANK1]', '[unused1]'],
+       ['[BLANK2]', '[unused2]'],
+       ['[BLANK3]', '[unused3]'],
+       ['[BLANK4]', '[unused4]'],
+       ['[BLANK5]', '[unused5]'],
+       ['[BLANK6]', '[unused6]'],
+       ['[BLANK7]', '[unused7]'],
+       ['[BLANK8]', '[unused8]'],
+       ['[BLANK9]', '[unused9]'],
+       ['[BLANK10]', '[unused10]'],
+       ['[BLANK11]', '[unused11]'],
+       ['[BLANK12]', '[unused12]'],
+       ['[BLANK13]', '[unused13]'],
+       ['[BLANK14]', '[unused14]'],
+       ['[BLANK15]', '[unused15]'],
        ]
 
     examples = []
@@ -78,25 +78,25 @@ def read_examples(input_data, doc_stride=64, max_seq_length=512, is_training=Tru
     for entry in tqdm(input_data['data'][:1000]):
         # if examples_count % 1000 == 0:
         #     print("已生成 %d 条样本" % examples_count)
-        paragraph=entry
+        paragraph = entry
         context_index = entry["context_id"]
 
         # 处理文章数据
         paragraph_text = paragraph["context"]
-        for key,value in replace_list:
+        for key, value in replace_list:
             paragraph_text = paragraph_text.replace(key,value,1)
-        tmp_text=""
-        is_blank=False
+        tmp_text = ""
+        is_blank = False
         for word_index in range(len(paragraph_text)):
             word = paragraph_text[word_index]
-            if  paragraph_text[word_index:word_index+7]=="[unused":
-                is_blank=True
-            if word.strip() ==']':
-                is_blank=False
+            if paragraph_text[word_index:word_index+7]=="[unused":
+                is_blank = True
+            if word.strip() == ']':
+                is_blank = False
             if is_blank is False:
-                tmp_text+=word.strip()+" "
+                tmp_text += word.strip() + " "
             else:
-                tmp_text+=word.strip()
+                tmp_text += word.strip()
         # 把句子中的字按空格划分，其中[BLANK8]以及被替换为[unused8]，且作为一个整体
         doc_texts = tmp_text.strip().split()
 
@@ -107,7 +107,7 @@ def read_examples(input_data, doc_stride=64, max_seq_length=512, is_training=Tru
         choices = entry["choices"]
         for answer_index, choice_num in enumerate(answers):
             # blank对应文本，用于确定位置
-            answer_text="[unused{}]".format(str((answer_index)+1))
+            answer_text = "[unused{}]".format(str((answer_index)+1))
             choice_to_answer[choice_num] = answer_text
             answer_to_choice[answer_text] = choice_num
         
@@ -183,7 +183,8 @@ class InputFeatures(object):
         self.choice_labels = choice_labels
 
 
-def convert_examples_to_features(examples, tokenizer, max_seq_length, is_training):
+def convert_examples_to_features(examples, tokenizer, max_choice_nums=20, 
+                                 max_answer_nums=15, max_seq_length=512, is_training=True):
     """Loads a data file into a list of `InputBatch`s."""
 
     features = []
@@ -191,48 +192,35 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length, is_trainin
         unique_id = example.unique_id
         example_index = example.example_index
         doc_span_index = example.qas_id
-        doc_tokens = example.sub_doc_texts # 文本
+        doc_tokens = example.sub_doc_texts  # 文本
         doc_choice_texts = [tokenizer.tokenize(_) for _ in example.choices]  # 候选答案
         doc_choice_labels = example.choice_labels
         doc_choice_labels_mask = example.choice_labels_mask
 
-        tokens = [] # 输入序列
-        choice_positions = [] # choice的在input中对应的起始和终止位置
-        answer_positions = [] # answer在input中对应的位置
-        segment_ids = [] # seg id
+        tokens = []  # 输入序列
+        choice_positions = []  # choice的在input中对应的起始和终止位置
+        answer_positions = []  # answer在input中对应的位置
+        segment_ids = []  # seg id
 
         tokens.append("[CLS]")
-        choice_positions.append(0)
-        answer_positions.append(1)
         for i, choice in enumerate(doc_choice_texts):
-            tokens.append("[unused"+str(50+2*(i+1)-1)+"]")  # BERT词表找对应标识,从[unused51]开始
-            choice_positions.append(1)
-            answer_positions.append(0)
+            choice_positions.append(len(tokens))
+            tokens.append("[unused"+str(50+i+1)+"]")  # BERT词表找对应标识,从[unused51]开始
             for word in choice:
                 tokens.append(word)
-                choice_positions.append(0)
-                answer_positions.append(0)
-        tokens.append("[SEP]")
-        choice_positions.append(0)
-        answer_positions.append(0)
 
+        tokens.append("[SEP]")
         for _ in range(len(tokens)):
             segment_ids.append(0)
 
         for word in doc_tokens:
             if "[unused" in word:
-                answer_positions.append(1)
-            else:
-                answer_positions.append(0)
+                answer_positions.append(len(tokens))
             tokens.append(word)
-            choice_positions.append(0)
             segment_ids.append(1)
 
         tokens.append('[SEP]')
         segment_ids.append(1)
-        choice_positions.append(0)
-        answer_positions.append(0)
-
 
 
         input_ids = tokenizer.convert_tokens_to_ids(tokens)
@@ -244,17 +232,28 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length, is_trainin
             input_ids.append(0)
             input_mask.append(0)
             segment_ids.append(0)
-            choice_positions.append(0)
-            answer_positions.append(0)
-        
+
         assert len(input_ids) == max_seq_length
         assert len(input_mask) == max_seq_length
         assert len(segment_ids) == max_seq_length
-        assert len(choice_positions) == max_seq_length
-        assert len(answer_positions) == max_seq_length
 
+        choice_positions_mask = [1] * len(choice_positions)
+        while len(choice_positions) < max_choice_nums:
+            choice_positions.append(0)
+            choice_positions_mask.append(0)
+
+        answer_positions_mask = [1] * len(answer_positions)
+        while len(answer_positions) < max_answer_nums:
+            answer_positions.append(max_seq_length-1)
+            answer_positions_mask.append(0)
         
+        assert len(choice_positions) == max_choice_nums
+        assert len(choice_positions_mask) == max_choice_nums
+        assert len(answer_positions) == max_answer_nums
+        assert len(answer_positions_mask) == max_answer_nums
         
+        if is_training:
+
 
         if example_index < 5:
             logger.info("*** Example ***")
