@@ -117,7 +117,7 @@ def read_examples(input_data, doc_stride=64, max_seq_length=512, is_training=Tru
             choice_length += len(choice)
         # 制作样本，滑动窗口设置为doc_stride
         start_index = 0
-        span_length = max_seq_length - (choice_length + 2*choice_nums + 3)
+        span_length = max_seq_length - (choice_length + choice_nums + 3)
         while start_index < len(doc_texts):           
             end_index = start_index + span_length
             if end_index > len(doc_texts):
@@ -128,6 +128,9 @@ def read_examples(input_data, doc_stride=64, max_seq_length=512, is_training=Tru
             for item in sub_doc_texts:
                 if "[unused" in item:
                     sub_answers.append(item)
+            if len(sub_answers) < 1:
+                start_index += doc_stride
+                continue
             choice_labels = []
             choice_labels_for_consine = []
             if is_training:
@@ -163,6 +166,7 @@ class InputFeatures(object):
                  unique_id,
                  example_index,
                  doc_span_index,
+                 doc_answers_text,
                  tokens,
                  input_ids,
                  input_mask,
@@ -176,6 +180,7 @@ class InputFeatures(object):
         self.unique_id = unique_id
         self.example_index = example_index
         self.doc_span_index = doc_span_index
+        self.doc_answers_text = doc_answers_text
         self.tokens = tokens
         self.input_ids = input_ids
         self.input_mask = input_mask
@@ -189,7 +194,7 @@ class InputFeatures(object):
 
 
 def convert_examples_to_features(examples, tokenizer, max_choice_nums=20, 
-                                 max_answer_nums=15, max_seq_length=512, is_training=True):
+                                 max_answer_nums=18, max_seq_length=512, is_training=True):
     """Loads a data file into a list of `InputBatch`s."""
 
     features = []
@@ -205,7 +210,7 @@ def convert_examples_to_features(examples, tokenizer, max_choice_nums=20,
 
         tokens = []  # 输入序列
         choice_positions = []  # choice的在input中对应的起始和终止位置
-        answer_positions = []  # answer在input中对应的位置
+        answer_positions = [0]  # answer在input中对应的位置
         segment_ids = []  # seg id
 
         tokens.append("[CLS]")
@@ -259,8 +264,8 @@ def convert_examples_to_features(examples, tokenizer, max_choice_nums=20,
         assert len(choice_positions_mask) == max_choice_nums
         assert len(answer_positions) == max_answer_nums
         assert len(answer_positions_mask) == max_answer_nums
-        assert len(doc_choice_labels) == max_answer_nums
-        assert len(doc_choice_labels_for_consine) == max_answer_nums
+        assert len(doc_choice_labels) == max_choice_nums
+        assert len(doc_choice_labels_for_consine) == max_choice_nums
 
 
 
@@ -280,7 +285,7 @@ def convert_examples_to_features(examples, tokenizer, max_choice_nums=20,
             logger.info(
                 "choice_positions_mask: %s" % " ".join([str(x) for x in choice_positions_mask]))
             logger.info(
-                "choice_positions_mask: %s" % " ".join([str(x) for x in answer_positions_mask]))
+                "answer_positions_mask: %s" % " ".join([str(x) for x in answer_positions_mask]))
 
             if is_training:
                 logger.info("choice_labels: %s" % " ".join([str(x) for x in doc_choice_labels]))

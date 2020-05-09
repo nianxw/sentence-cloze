@@ -1,12 +1,15 @@
 import argparse
+import os
+
+cur_path = os.path.dirname(__file__)
 
 class config:
     def __init__(self):
         parser = argparse.ArgumentParser()
-        parser.add_argument("--bert_config_file", default='/home/nianxw/nxw/cmrc_nxw/chinese_L-12_H-768_A-12/bert_config.json', type=str,
+        parser.add_argument("--bert_config_file", default='/home/nianxw/nxw/chinese_L-12_H-768_A-12/bert_config.json', type=str,
                             help="The config json file corresponding to the pre-trained BERT model. "
                                  "This specifies the model architecture.")
-        parser.add_argument("--vocab_file", default='/home/nianxw/nxw/cmrc_nxw/chinese_L-12_H-768_A-12/vocab.txt', type=str,
+        parser.add_argument("--vocab_file", default='/home/nianxw/nxw/chinese_L-12_H-768_A-12/vocab.txt', type=str,
                             help="The vocabulary file that the BERT model was trained on.")
         parser.add_argument("--init_checkpoint", default=None, type=str,
                             help="Initial checkpoint (usually from a pre-trained BERT model).")
@@ -18,9 +21,9 @@ class config:
                             help="The output directory where the model checkpoints and predictions will be written.")
 
         ## Other parameters
-        parser.add_argument("--train_file", default='/home/nianxw/nxw/cmrc_nxw/data/cmrc2019_train.json', type=str,
+        parser.add_argument("--train_file", default=os.path.join(cur_path, 'data/cmrc2019_train.json'), type=str,
                             help="SQuAD json for training. E.g., train-v1.1.json")
-        parser.add_argument("--predict_file", default='/home/nianxw/nxw/cmrc_nxw/data/cmrc2019_trial.json', type=str,
+        parser.add_argument("--predict_file", default=os.path.join(cur_path, 'data/cmrc2019_trial.json'), type=str,
                             help="SQuAD json for predictions. E.g., dev-v1.1.json or test-v1.1.json")
         parser.add_argument("--max_seq_length", default=512, type=int,
                             help="The maximum total input sequence length after WordPiece tokenization. Sequences "

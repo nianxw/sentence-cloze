@@ -33,7 +33,7 @@ class BertForMultiChoice(PreTrainedBertModel):
     def __init__(self, config):
         super(BertForMultiChoice, self).__init__(config)
         self.bert = BertModel(config)
-        self.W1 = nn.Linear(config.hidden_size*2, config.hidden_size)
+        self.W1 = nn.Linear(config.hidden_size, config.hidden_size)
         self.W2 = nn.Linear(config.hidden_size, config.hidden_size)
         self.apply(self.init_bert_weights)
 
@@ -69,7 +69,6 @@ class BertForMultiChoice(PreTrainedBertModel):
 
         attention_matrix = torch.bmm(choice_rep_w1, answer_rep_w2.permute(0, 2, 1))  # [batch_size, m, n]
         attention_matrix_mask = torch.bmm(choice_positions_mask.unsqueeze(-1), answer_positions_mask.unsqueeze(1))  # [batch_size, m, n]
-        attention_matrix_mask = attention_matrix_mask.to(dtype=next(self.parameters()).dtype)
 
         attention_matrix_logits = attention_matrix + (1-attention_matrix_mask) * -10000.0
 
@@ -82,7 +81,8 @@ class BertForMultiChoice(PreTrainedBertModel):
             labels = choice_labels.view(-1)
             labels_mask = choice_positions_mask.view(-1)
 
-            one_hot_label = F.one_hot(labels, num_class=logits_flat.size()[-1])
+            one_hot_label = F.one_hot(labels, num_classes=logits_flat.size()[-1])
+            tmp = logits_flat * one_hot_label
             per_choice_loss = - torch.sum(logits_flat * one_hot_label, dim=-1)
             numerator = torch.sum(labels_mask * per_choice_loss)
             denominator = torch.sum(labels_mask) + 1e-5
@@ -169,7 +169,7 @@ def main():
             train_examples=cPickle.load(open("train_file_baseline.pkl",mode='rb'))
         else:
             train_examples = read_examples(raw_train_data, doc_stride=args.doc_stride, max_seq_length=args.max_seq_length, is_training=True)
-            cPickle.dump(train_examples,open("train_file_baseline.pkl",mode='wb'))
+            cPickle.dump(train_examples,open("train_file_baseline.pkl", mode='wb'))
         logger.info("train examples {}".format(len(train_examples)))
         num_train_steps = int(
             len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps * args.num_train_epochs)
