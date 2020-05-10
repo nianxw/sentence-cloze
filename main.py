@@ -26,6 +26,10 @@ logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message
                     level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+n_gpu = torch.cuda.device_count()
 
 class BertForMultiChoice(PreTrainedBertModel):
 
@@ -39,7 +43,7 @@ class BertForMultiChoice(PreTrainedBertModel):
     def gather_info(self, input_tensor, positions):
         batch_size, seq_len, hidden_size = input_tensor.size()
         flat_offsets = torch.linspace(0, batch_size-1, steps=batch_size).long().view(-1, 1)*seq_len
-        flat_positions = positions.long() + flat_offsets
+        flat_positions = positions.long() + flat_offsets.to(device)
         flat_positions = flat_positions.view(-1)
         flat_seq_tensor = input_tensor.view(batch_size*seq_len, hidden_size)
         output_tensor = torch.index_select(flat_seq_tensor, 0, flat_positions).view(batch_size, -1, hidden_size)
@@ -65,31 +69,22 @@ class BertForMultiChoice(PreTrainedBertModel):
         # get answer representation
         answer_rep = self.gather_info(sequence_output, answer_positions)
         answer_rep_w2 = self.W2(answer_rep)   # [batch_size, n, hidden_size]  n为blank数目
-
+        
+        # change dtype
+        choice_positions_mask = choice_positions_mask.to(dtype=next(self.parameters()).dtype)
+        answer_positions_mask = answer_positions_mask.to(dtype=next(self.parameters()).dtype)
+        
+        
         attention_matrix = torch.bmm(choice_rep_w1, answer_rep_w2.permute(0, 2, 1))  # [batch_size, m, n]
         attention_matrix_mask = torch.bmm(choice_positions_mask.unsqueeze(-1), answer_positions_mask.unsqueeze(1))  # [batch_size, m, n]
 
-        attention_matrix_logits = attention_matrix + (1-attention_matrix_mask) * -10000.0
+        attention_matrix_logits = attention_matrix + (1.0 - attention_matrix_mask) * -10000.0
 
         probs = F.softmax(attention_matrix_logits, -1)
 
         if choice_labels is not None:
             # get loss
             # loss1
-            # logits_flat = torch.log(probs.view(-1, probs.size()[-1]))
-            # labels = choice_labels.view(-1)
-            # labels_mask = choice_positions_mask.view(-1)
-
-            # loss_fct = nn.NLLLoss(reduce=False)
-            # tmp_loss = loss_fct(logits_flat, labels)
-            # mask_tmp_loss = labels_mask * tmp_loss
-            # numerator = torch.sum(mask_tmp_loss)
-
-            # one_hot_label = F.one_hot(labels, num_classes=logits_flat.size()[-1])
-            # one_hot_label = one_hot_label.float()
-            # per_choice_loss = - torch.sum(logits_flat * one_hot_label, dim=-1)
-            # numerator = torch.sum(labels_mask * per_choice_loss)
-
             logits_flat = attention_matrix_logits.view(-1, attention_matrix_logits.size()[-1])
             labels = choice_labels.view(-1)
             labels_mask = choice_positions_mask.view(-1)
@@ -106,6 +101,7 @@ class BertForMultiChoice(PreTrainedBertModel):
 
             # loss2
             if limit_loss:
+                choice_labels_for_consine = choice_labels_for_consine.to(dtype=next(self.parameters()).dtype)
                 logits_normal = F.normalize(probs, p=2, dim=-1)
                 choice_att_matrix = torch.bmm(logits_normal, logits_normal.permute(0, 2, 1))   # [batch_size, m, m]
                 choice_att_matrix_mask = torch.bmm(choice_positions_mask.unsqueeze(-1), choice_positions_mask.unsqueeze(1))  # [batch_size, m, m]
@@ -115,7 +111,7 @@ class BertForMultiChoice(PreTrainedBertModel):
 
                 # 获取两个子loss
                 cosine_mask_for_negtive = torch.bmm(choice_labels_for_consine.unsqueeze(-1), choice_labels_for_consine.unsqueeze(1)) 
-                cosine_mask_for_positive = 1 - cosine_mask_for_negtive
+                cosine_mask_for_positive = 1.0 - cosine_mask_for_negtive
 
                 cos_distance_1 = torch.sum((choice_att_triu_matrix * cosine_mask_for_positive).view(choice_att_triu_matrix.size(0), -1), dim=-1)
                 cos_distance_2 = torch.sum(((1- choice_att_triu_matrix) * cosine_mask_for_negtive).view(choice_att_triu_matrix.size(0), -1), dim=-1)
@@ -138,15 +134,15 @@ RawResult = collections.namedtuple("RawResult",
 
 def main():
     args = config().parser.parse_args()
-    if args.local_rank == -1 or args.no_cuda:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        n_gpu = torch.cuda.device_count()
-    else:
-        torch.cuda.set_device(args.local_rank)
-        device = torch.device("cuda", args.local_rank)
-        n_gpu = 1
-        # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
-        torch.distributed.init_process_group(backend='nccl')
+#     if args.local_rank == -1 or args.no_cuda:
+#         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#         n_gpu = torch.cuda.device_count()
+#     else:
+#         torch.cuda.set_device(args.local_rank)
+#         device = torch.device("cuda", args.local_rank)
+#         n_gpu = 1
+#         # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
+#         torch.distributed.init_process_group(backend='nccl')
     logger.info("device: {} n_gpu: {}, distributed training: {}, 16-bits training: {}".format(
         device, n_gpu, bool(args.local_rank != -1), args.fp16))
 
@@ -337,6 +333,8 @@ def main():
                 else:
                     loss = loss1
                 if n_gpu > 1:
+                    loss1 = loss1.mean()
+                    loss2 = loss2.mean()
                     loss = loss.mean()  # mean() to average on multi-gpu.
                 if args.gradient_accumulation_steps > 1:
                     loss = loss / args.gradient_accumulation_steps
@@ -354,7 +352,7 @@ def main():
                     global_step += 1
 
                 if (step+1) % 1 == 0:
-                    if loss2:
+                    if loss2 is not None:
                         logger.info("step: {} #### loss1: {}  loss2: {}".format(step, loss1.cpu().item(), loss2.cpu().item()))
                     else:
                         logger.info("step: {} #### loss1: {}".format(step, loss1.cpu().item()))
