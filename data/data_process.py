@@ -53,7 +53,7 @@ class SenExample(object):
 
 
 
-def read_examples(input_data, doc_stride=64, max_seq_length=512, is_training=True):
+def read_examples(input_data, tokenizer, doc_stride=64, max_seq_length=512, is_training=True):
     replace_list=[
        ['[BLANK1]', '[unused1]'],
        ['[BLANK2]', '[unused2]'],
@@ -75,7 +75,7 @@ def read_examples(input_data, doc_stride=64, max_seq_length=512, is_training=Tru
     examples = []
     unique_id = 100000000000
     example_index = 0
-    for entry in tqdm(input_data['data'][:1000]):
+    for entry in tqdm(input_data['data']):
         # if examples_count % 1000 == 0:
         #     print("已生成 %d 条样本" % examples_count)
         paragraph = entry
@@ -98,7 +98,17 @@ def read_examples(input_data, doc_stride=64, max_seq_length=512, is_training=Tru
             else:
                 tmp_text += word.strip()
         # 把句子中的字按空格划分，其中[BLANK8]以及被替换为[unused8]，且作为一个整体
-        doc_texts = tmp_text.strip().split()
+        tmp_texts = tmp_text.strip().split()
+
+        # 文本之前未用tokenize处理，这里进行修改
+        doc_texts = []
+        for token in tmp_texts:
+            if token.find("unused") > -1:  #  not Part-of-speech of [unused1-15]
+                sub_tokens = [str(token)]
+            else:
+                sub_tokens = tokenizer.tokenize(token)
+            for sub_token in sub_tokens:
+                doc_texts.append(sub_token)
 
         # 构建choice-answer字典
         choice_to_answer = {}
@@ -203,7 +213,7 @@ def convert_examples_to_features(examples, tokenizer, max_choice_nums=20,
         example_index = example.example_index
         doc_answers_text = example.sub_answer_texts
         doc_span_index = example.qas_id
-        doc_tokens = example.sub_doc_texts  # 文本
+        doc_tokens = example.sub_doc_texts
         doc_choice_texts = [tokenizer.tokenize(_) for _ in example.choices]  # 候选答案
         doc_choice_labels = example.choice_labels
         doc_choice_labels_for_consine = example.choice_labels_for_consine

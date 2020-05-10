@@ -13,7 +13,6 @@ import torch
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler
 from torch import nn
-from torch.nn import NLLLoss
 from torch.nn import functional as F
 
 from Config import config
@@ -77,17 +76,34 @@ class BertForMultiChoice(PreTrainedBertModel):
         if choice_labels is not None:
             # get loss
             # loss1
-            logits_flat = torch.log(probs.view(-1, probs.size()[-1]))
+            # logits_flat = torch.log(probs.view(-1, probs.size()[-1]))
+            # labels = choice_labels.view(-1)
+            # labels_mask = choice_positions_mask.view(-1)
+
+            # loss_fct = nn.NLLLoss(reduce=False)
+            # tmp_loss = loss_fct(logits_flat, labels)
+            # mask_tmp_loss = labels_mask * tmp_loss
+            # numerator = torch.sum(mask_tmp_loss)
+
+            # one_hot_label = F.one_hot(labels, num_classes=logits_flat.size()[-1])
+            # one_hot_label = one_hot_label.float()
+            # per_choice_loss = - torch.sum(logits_flat * one_hot_label, dim=-1)
+            # numerator = torch.sum(labels_mask * per_choice_loss)
+
+            logits_flat = attention_matrix_logits.view(-1, attention_matrix_logits.size()[-1])
             labels = choice_labels.view(-1)
             labels_mask = choice_positions_mask.view(-1)
 
-            one_hot_label = F.one_hot(labels, num_classes=logits_flat.size()[-1])
-            tmp = logits_flat * one_hot_label
-            per_choice_loss = - torch.sum(logits_flat * one_hot_label, dim=-1)
-            numerator = torch.sum(labels_mask * per_choice_loss)
+            loss_fct = nn.CrossEntropyLoss(reduce=False)  # nn.logSoftmax()和nn.NLLLoss()的整合
+            tmp_loss = loss_fct(logits_flat, labels)
+            mask_tmp_loss = labels_mask * tmp_loss
+            numerator = torch.sum(mask_tmp_loss)
+            
             denominator = torch.sum(labels_mask) + 1e-5
             loss1 = numerator / denominator
             loss2 = None
+
+
             # loss2
             if limit_loss:
                 logits_normal = F.normalize(probs, p=2, dim=-1)
@@ -102,10 +118,12 @@ class BertForMultiChoice(PreTrainedBertModel):
                 cosine_mask_for_positive = 1 - cosine_mask_for_negtive
 
                 cos_distance_1 = torch.sum((choice_att_triu_matrix * cosine_mask_for_positive).view(choice_att_triu_matrix.size(0), -1), dim=-1)
-                cos_distance_2 = torch.sum((choice_att_triu_matrix * cosine_mask_for_negtive).view(choice_att_triu_matrix.size(0), -1), dim=-1)
+                cos_distance_2 = torch.sum(((1- choice_att_triu_matrix) * cosine_mask_for_negtive).view(choice_att_triu_matrix.size(0), -1), dim=-1)
 
                 cos_distance = cos_distance_1 + cos_distance_2
-                loss2 = cos_distance.mean()
+                labels_mask_for_cosine = torch.sum(choice_positions_mask, dim=-1)
+                cosine_nums = torch.sum(labels_mask_for_cosine*(labels_mask_for_cosine - 1) / 2, dim=-1)
+                loss2 = torch.sum(cos_distance)/cosine_nums
             return loss1, loss2
         else:
             return probs
@@ -164,11 +182,13 @@ def main():
     import pickle as cPickle
     train_examples = None
     num_train_steps = None
+    bert_config = BertConfig.from_json_file(args.bert_config_file)
+    tokenizer = BertTokenizer(vocab_file=args.vocab_file, do_lower_case=args.do_lower_case)
     if args.do_train:
         if os.path.exists("train_file_baseline.pkl"):
             train_examples=cPickle.load(open("train_file_baseline.pkl",mode='rb'))
         else:
-            train_examples = read_examples(raw_train_data, doc_stride=args.doc_stride, max_seq_length=args.max_seq_length, is_training=True)
+            train_examples = read_examples(raw_train_data, tokenizer=tokenizer, doc_stride=args.doc_stride, max_seq_length=args.max_seq_length, is_training=True)
             cPickle.dump(train_examples,open("train_file_baseline.pkl", mode='wb'))
         logger.info("train examples {}".format(len(train_examples)))
         num_train_steps = int(
@@ -176,8 +196,6 @@ def main():
 
 
     # Prepare model
-    bert_config = BertConfig.from_json_file(args.bert_config_file)
-    tokenizer = BertTokenizer(vocab_file=args.vocab_file, do_lower_case=args.do_lower_case)
     model = BertForMultiChoice(bert_config)
     if args.init_checkpoint is not None:
         logger.info('load bert weight')
@@ -314,7 +332,10 @@ def main():
                                      choice_positions, answer_positions, 
                                      choice_positions_mask, answer_positions_mask, 
                                      choice_labels, choice_labels_for_consine, limit_loss=True)
-                loss = loss1 + loss2
+                if loss2 is not None:
+                    loss = loss1 + loss2
+                else:
+                    loss = loss1
                 if n_gpu > 1:
                     loss = loss.mean()  # mean() to average on multi-gpu.
                 if args.gradient_accumulation_steps > 1:
@@ -325,15 +346,18 @@ def main():
                     loss.backward()
                 if (step + 1) % args.gradient_accumulation_steps == 0:
                     # modify learning rate with special warm up BERT uses
-                    lr_this_step = args.learning_rate * warmup_linear(global_step/t_total, args.warmup_proportion)
+                    lr_this_step = args.learning_rate * warmup_linear(global_step / t_total, args.warmup_proportion)
                     for param_group in optimizer.param_groups:
                         param_group['lr'] = lr_this_step
                     optimizer.step()
                     optimizer.zero_grad()
                     global_step += 1
 
-                if (step+1) % 50 == 0:
-                    logger.info("step: {} #### loss1: {}  loss2: {}".format(step, loss1.cpu().item(), loss2.cpu().item()))
+                if (step+1) % 1 == 0:
+                    if loss2:
+                        logger.info("step: {} #### loss1: {}  loss2: {}".format(step, loss1.cpu().item(), loss2.cpu().item()))
+                    else:
+                        logger.info("step: {} #### loss1: {}".format(step, loss1.cpu().item()))
 
     # Save a trained model
     output_model_file = os.path.join(args.output_dir, "pytorch_model.bin")
