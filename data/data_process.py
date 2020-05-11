@@ -1,4 +1,5 @@
 import json
+import collections
 import os
 import re
 import random
@@ -75,7 +76,7 @@ def read_examples(input_data, tokenizer, doc_stride=64, max_seq_length=512, is_t
     examples = []
     unique_id = 100000000000
     example_index = 0
-    for entry in tqdm(input_data['data']):
+    for entry in tqdm(input_data['data'][:100]):
         # if examples_count % 1000 == 0:
         #     print("已生成 %d 条样本" % examples_count)
         paragraph = entry
@@ -321,5 +322,47 @@ def convert_examples_to_features(examples, tokenizer, max_choice_nums=20,
 
     return features
 
-def write_predictions():
+
+def get_nums(input):
+    nums = 0
+    while nums < len(input):
+        if input[nums] == 0:
+            break
+        nums += 1
+    return nums
+
+def get_answer_index(input):
+    res = []
+    for tmp in input:
+        index = re.match('[\d]+', tmp).group()
+        res.append(index)
+    return res
+
+
+def write_predictions(all_examples, all_features, all_results, max_answer_length, output_prediction_file):
+    """Write final predictions to the json file."""
+    logger.info("Writing predictions to: %s" % (output_prediction_file))
+
+    example_index_to_features = collections.defaultdict(list)
+    for feature in all_features:   # 文章、问题 id ---->  [多个滑动窗口得到的样本]
+        example_index_to_features[feature.example_index].append(feature)
+
+    unique_id_to_result = {}   # 每个feature对应的结果
+    for result in all_results:
+        unique_id_to_result[result.unique_id] = result
+
+    all_predictions = collections.OrderedDict()
+
+    for (example_index, example) in enumerate(all_examples):
+        features = example_index_to_features[example_index]
+        blank_to_answer = {}
+        for feature in features:
+            result = unique_id_to_result[feature.unique_id]
+            choice_nums = get_nums(feature.choice_positions_mask)
+            answer_nums = get_nums(feature.answer_positions_mask)
+            result = result[:choice_nums][:answer_nums]
+            sub_answers_index = get_answer_index(features.doc_answers_text)
+
+
+
     return

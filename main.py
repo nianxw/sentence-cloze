@@ -374,7 +374,7 @@ def main():
 
     if args.do_predict and (args.local_rank == -1 or torch.distributed.get_rank() == 0):
         eval_examples = read_examples(
-            raw_test_data, doc_stride=args.doc_stride, max_seq_length=args.max_seq_length, is_training=False)
+            raw_test_data, tokenizer=tokenizer, doc_stride=args.doc_stride, max_seq_length=args.max_seq_length, is_training=False)
         # eval_examples=eval_examples[:100]
         eval_features = convert_examples_to_features(
             examples=eval_examples,
@@ -421,18 +421,17 @@ def main():
             choice_positions_mask = choice_positions_mask.to(device)
             answer_positions_mask = answer_positions_mask.to(device)
             with torch.no_grad():
-                batch_logits = model(input_ids, input_mask, segment_ids, choice_positions, answer_positions, choice_positions_mask, answer_positions_mask)  # [24, n]
+                batch_probs = model(input_ids, input_mask, segment_ids, choice_positions, answer_positions, choice_positions_mask, answer_positions_mask)  # [24, n]
             for i, example_index in enumerate(example_indices):
-                logits = batch_logits[i].detach().cpu().tolist()
+                probs = batch_probs[i].detach().cpu().tolist()
                 eval_feature = eval_features[example_index.item()]
                 unique_id = int(eval_feature.unique_id)
                 all_results.append(RawResult(unique_id=unique_id,
-                                             logits=logits))
+                                             logits=probs))
         output_prediction_file = os.path.join(args.output_dir, "predictions.json")
         
         
-        write_predictions(eval_examples, eval_features, all_results,
-                          args.max_answer_length, output_prediction_file, args.verbose_logging)
+        write_predictions(eval_examples, eval_features, all_results, args.max_answer_length, output_prediction_file)
 
 
 if __name__ == "__main__":

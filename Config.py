@@ -17,7 +17,7 @@ class config:
      #                        help="Initial checkpoint (usually from a pre-trained BERT model).")
 
         ## Required parameters
-        parser.add_argument("--output_dir", default='./output', type=str,
+        parser.add_argument("--output_dir", default=os.path.join(cur_path, 'output'), type=str,
                             help="The output directory where the model checkpoints and predictions will be written.")
 
         ## Other parameters
